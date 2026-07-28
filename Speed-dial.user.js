@@ -11,6 +11,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
 // @connect      call2all.co.il
+// @updateURL    https://github.com/Extension-404/Speed-dial/raw/refs/heads/main/Speed-dial.user.js
+// @downloadURL  https://github.com/Extension-404/Speed-dial/raw/refs/heads/main/Speed-dial.user.js
 // @run-at       document-idle
 // ==/UserScript==
  

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         חיוג מהיר ומערכת צינתוקים - ימות המשיח (PRO Security)
 // @namespace    http://tampermonkey.net/
-// @version      2.3
-// @description  איתור מספרי טלפון, הצפנת טוקן, סנכרון זיהוי יוצא מהשרת ובחירת Caller ID אינטראקטיבית לפני חיוג
+// @version      2.4
+// @description  איתור מספרי טלפון, הצפנת טוקן, סנכרון זיהוי יוצא וסינון מספרים נבחרים לפופ-אפ החיוג המהיר
 // @match        *://*/*
 // @exclude      *://docs.google.com/*
 // @exclude      *://github.com/*
@@ -22,13 +22,14 @@
     // ==========================================
     // 1. הגדרות וניהול גרסאות
     // ==========================================
-    const CURRENT_VERSION = "2.3";
+    const CURRENT_VERSION = "2.4";
     const CONFIG_KEYS = {
         TOKEN: 'ym_token',
         PATH: 'ym_path',
         CALLER_ID: 'ym_caller_id',
         PROMPT_CALLER_ID: 'ym_prompt_caller_id', // מתג שאל אותי לפני חיוג
-        APPROVED_IDS: 'ym_approved_ids',         // רשימת המספרים המאושרים שנשמרה
+        ALL_APPROVED_IDS: 'ym_all_approved_ids', // כל רשימת המספרים מהשרת (למשל כל ה-20)
+        ACTIVE_CALLER_IDS: 'ym_active_ids',      // רק המספרים שנבחרו להופיע בפופ-אפ החיוג
         LIST_NAME: 'ym_list_name',
         VERSION: 'ym_script_version'
     };
@@ -39,7 +40,8 @@
             path: GM_getValue(CONFIG_KEYS.PATH, 'ivr2:/'),
             callerId: GM_getValue(CONFIG_KEYS.CALLER_ID, ''),
             promptCallerId: GM_getValue(CONFIG_KEYS.PROMPT_CALLER_ID, false),
-            approvedIds: JSON.parse(GM_getValue(CONFIG_KEYS.APPROVED_IDS, '[]')),
+            allApprovedIds: JSON.parse(GM_getValue(CONFIG_KEYS.ALL_APPROVED_IDS, '[]')),
+            activeCallerIds: JSON.parse(GM_getValue(CONFIG_KEYS.ACTIVE_CALLER_IDS, '[]')),
             listName: GM_getValue(CONFIG_KEYS.LIST_NAME, '')
         };
     }
@@ -66,11 +68,10 @@
                     } else if (Array.isArray(data.callerIds)) {
                         ids = data.callerIds;
                     }
-                    // ניקוי כפילויות והמרה לפורמט ישראלי רגיל (מתחיל ב-0)
                     ids = [...new Set(ids)].map(id => id.replace(/^(\+)?972/, '0'));
                     
                     if (ids.length > 0) {
-                        GM_setValue(CONFIG_KEYS.APPROVED_IDS, JSON.stringify(ids));
+                        GM_setValue(CONFIG_KEYS.ALL_APPROVED_IDS, JSON.stringify(ids));
                         callback(true, ids);
                     } else {
                         callback(false, "לא נמצאו מספרים מאושרים בחשבון זה.");
@@ -84,7 +85,7 @@
     }
 
     // ==========================================
-    // 3. ממשק משתמש (UI) - חלון הגדרות מעוצב
+    // 3. ממשק משתמש (UI) - חלון הגדרות מעוצב ומתוחכם
     // ==========================================
     function openSettingsModal() {
         const existingModal = document.getElementById('ym-settings-modal');
@@ -92,20 +93,18 @@
 
         const current = getSettings();
         
-        // יצירת אופציות לרשימה הנפתחת של הזיהוי היוצא
         let callerIdOptions = `<option value="">-- ברירת מחדל של המערכת --</option>`;
-        current.approvedIds.forEach(id => {
+        current.allApprovedIds.forEach(id => {
             const selected = (id === current.callerId) ? 'selected' : '';
             callerIdOptions += `<option value="${id}" ${selected}>${id}</option>`;
         });
-        // אם המספר השמור לא ברשימה, נוסיף אותו ידנית
-        if (current.callerId && !current.approvedIds.includes(current.callerId)) {
+        if (current.callerId && !current.allApprovedIds.includes(current.callerId)) {
             callerIdOptions += `<option value="${current.callerId}" selected>${current.callerId} (ידני)</option>`;
         }
 
         const modalHtml = `
             <div id="ym-settings-modal" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 999999; display: flex; align-items: center; justify-content: center; font-family: Arial, sans-serif; direction: rtl;">
-                <div style="background: #fff; padding: 25px; border-radius: 12px; width: 450px; max-width: 90%; box-shadow: 0 5px 25px rgba(0,0,0,0.3); text-align: right; position: relative;">
+                <div style="background: #fff; padding: 25px; border-radius: 12px; width: 480px; max-width: 95%; max-height: 90vh; overflow-y: auto; box-shadow: 0 5px 25px rgba(0,0,0,0.3); text-align: right; position: relative;">
                     <h3 style="margin-top: 0; color: #333; border-bottom: 2px solid #0066cc; padding-bottom: 10px;">⚙️ הגדרות מערכת צינתוקים (PRO)</h3>
                     
                     <label style="display: block; margin-top: 15px; font-weight: bold; font-size: 13px; color: #555;">טוקן המערכת (מוסתר):</label>
@@ -122,14 +121,21 @@
                         <select id="ym-select-callerid" style="flex-grow: 1; padding: 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; font-size: 14px;">
                             ${callerIdOptions}
                         </select>
-                        <button id="ym-btn-fetch-ids" style="background: #17a2b8; color: #fff; border: none; padding: 0 10px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; white-space: nowrap;" title="משוך מספרי זיהוי יוצא מאושרים מהשרת">🔄 מול ימות</button>
+                        <button id="ym-btn-fetch-ids" style="background: #17a2b8; color: #fff; border: none; padding: 0 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 12px; white-space: nowrap;" title="משוך מספרי זיהוי יוצא מאושרים מהשרת">🔄 מול ימות</button>
                     </div>
 
-                    <div style="margin-top: 15px; background: #f8f9fa; padding: 10px; border-radius: 6px; border: 1px solid #e9ecef;">
+                    <div style="margin-top: 15px; background: #f8f9fa; padding: 12px; border-radius: 8px; border: 1px solid #e9ecef;">
                         <label style="display: flex; align-items: center; cursor: pointer; font-weight: bold; font-size: 13px; color: #0056b3; margin: 0;">
                             <input type="checkbox" id="ym-check-prompt" ${current.promptCallerId ? 'checked' : ''} style="margin-left: 8px; width: 16px; height: 16px; cursor: pointer;">
                             🔔 שאל אותי באיזה זיהוי יוצא להשתמש לפני כל חיוג
                         </label>
+                        
+                        <!-- אזור סימון המספרים המועדפים (מוצג רק כשהמתג דולק) -->
+                        <div id="ym-pool-container" style="display: ${current.promptCallerId ? 'block' : 'none'}; margin-top: 12px; padding-top: 10px; border-top: 1px dashed #ccc;">
+                            <span style="font-size: 12px; color: #555; font-weight: bold; display: block; margin-bottom: 6px;">📋 בחר אילו מספרים להכניס למאגר הבחירה המהיר:</span>
+                            <div id="ym-checkbox-list" style="max-height: 140px; overflow-y: auto; background: #fff; border: 1px solid #ddd; padding: 8px; border-radius: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                            </div>
+                        </div>
                     </div>
 
                     <label style="display: block; margin-top: 15px; font-weight: bold; font-size: 13px; color: #555;">שם רשימת הצינתוקים (חובה):</label>
@@ -146,7 +152,33 @@
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
 
-        // מאזינים לכפתורים בחלון
+        // פונקציה לרינדור רשימת הצ'קבוקסים של המספרים המועדפים
+        function renderCheckboxList(allIds, activeIds) {
+            const container = document.getElementById('ym-checkbox-list');
+            if (allIds.length === 0) {
+                container.style.gridTemplateColumns = "1fr";
+                container.innerHTML = `<div style="color: #dc3545; font-size: 12px;">לא נמצאו מספרים במאגר. לחץ על "🔄 מול ימות" למשיכה.</div>`;
+                return;
+            }
+            container.style.gridTemplateColumns = "1fr 1fr";
+            container.innerHTML = allIds.map(id => {
+                const isChecked = (activeIds.length === 0 || activeIds.includes(id)) ? 'checked' : '';
+                return `
+                    <label style="display: flex; align-items: center; font-size: 13px; color: #333; background: #f1f3f5; padding: 4px 6px; border-radius: 4px; cursor: pointer;">
+                        <input type="checkbox" class="ym-pool-item" value="${id}" ${isChecked} style="margin-left: 6px;">
+                        <span style="direction: ltr;">${id}</span>
+                    </label>
+                `;
+            }).join('');
+        }
+
+        renderCheckboxList(current.allApprovedIds, current.activeCallerIds);
+
+        // מאזין להצגה/הסתרה של אזור בחירת המספרים כשלוחצים על המתג
+        document.getElementById('ym-check-prompt').addEventListener('change', function() {
+            document.getElementById('ym-pool-container').style.display = this.checked ? 'block' : 'none';
+        });
+
         document.getElementById('ym-toggle-token').addEventListener('click', function() {
             const input = document.getElementById('ym-input-token');
             input.type = (input.type === 'password') ? 'text' : 'password';
@@ -173,6 +205,10 @@
                     const currentVal = selectEl.value;
                     selectEl.innerHTML = `<option value="">-- ברירת מחדל של המערכת --</option>` + 
                         result.map(id => `<option value="${id}" ${id === currentVal ? 'selected' : ''}>${id}</option>`).join('');
+                    
+                    // מרנדרים מחדש את הצ'קבוקסים עם כל המספרים החדשים שמשכנו
+                    renderCheckboxList(result, result); // כברירת מחדל כולם יסומנו
+
                     statusEl.style.color = 'green';
                     statusEl.innerText = '✅ רשימת המספרים סונכרונה בהצלחה!';
                 } else {
@@ -189,6 +225,12 @@
             const promptCallerId = document.getElementById('ym-check-prompt').checked;
             const listName = document.getElementById('ym-input-listname').value.trim();
 
+            // איסוף כל המספרים שסומנו ב-V בתוך המאגר המצומצם
+            const selectedActiveIds = [];
+            document.querySelectorAll('.ym-pool-item:checked').forEach(cb => {
+                selectedActiveIds.push(cb.value);
+            });
+
             if (!token || !listName || !path) {
                 const statusEl = document.getElementById('ym-save-status');
                 statusEl.style.color = 'red';
@@ -200,6 +242,7 @@
             GM_setValue(CONFIG_KEYS.PATH, path);
             GM_setValue(CONFIG_KEYS.CALLER_ID, callerId);
             GM_setValue(CONFIG_KEYS.PROMPT_CALLER_ID, promptCallerId);
+            GM_setValue(CONFIG_KEYS.ACTIVE_CALLER_IDS, JSON.stringify(selectedActiveIds));
             GM_setValue(CONFIG_KEYS.LIST_NAME, listName);
             GM_setValue(CONFIG_KEYS.VERSION, CURRENT_VERSION);
 
@@ -217,18 +260,21 @@
     GM_registerMenuCommand("⚙️ הגדרות חיוג מהיר (ימות המשיח)", openSettingsModal);
 
     // ==========================================
-    // 4. חלון בחירה מהיר לזיהוי יוצא (לפני חיוג)
+    // 4. חלון בחירה מהיר לזיהוי יוצא (פופ-אפ חכם)
     // ==========================================
     function openQuickDialModal(phoneNumber, targetElement, onSelect) {
         const config = getSettings();
         const existingModal = document.getElementById('ym-quick-dial-modal');
         if (existingModal) existingModal.remove();
 
+        // נשתמש אך ורק במספרים שהמשתמש סימן במאגר (אם בחר, אחרת נציג הכל)
+        const idsToDisplay = (config.activeCallerIds.length > 0) ? config.activeCallerIds : config.allApprovedIds;
+
         let buttonsHtml = '';
-        if (config.approvedIds.length === 0) {
-            buttonsHtml = `<div style="color: #dc3545; font-size: 13px; margin-bottom: 10px;">לא נשמרו מספרי זיהוי יוצא. כנס להגדרות ולחץ על "🔄 מול ימות".</div>`;
+        if (idsToDisplay.length === 0) {
+            buttonsHtml = `<div style="color: #dc3545; font-size: 13px; margin-bottom: 10px;">לא נבחרו מספרים למאגר. כנס להגדרות וסמן מספרים ב-V.</div>`;
         } else {
-            buttonsHtml = config.approvedIds.map(id => 
+            buttonsHtml = idsToDisplay.map(id => 
                 `<button class="ym-quick-btn" data-id="${id}" style="background: #f8f9fa; border: 1px solid #ced4da; padding: 10px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; color: #0056b3; transition: all 0.2s;">📞 ${id}</button>`
             ).join('');
         }
@@ -239,7 +285,7 @@
                     <h4 style="margin: 0 0 5px 0; color: #333; font-size: 16px;">חיוג מהיר אל: <span style="color: #0066cc; direction: ltr; display: inline-block;">${phoneNumber}</span></h4>
                     <p style="margin: 0 0 15px 0; font-size: 13px; color: #666;">בחר באמצעות איזה זיהוי יוצא להוציא את השיחה:</p>
                     
-                    <div style="display: flex; flex-direction: column; gap: 8px; max-height: 250px; overflow-y: auto; margin-bottom: 15px; padding: 2px;">
+                    <div style="display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; margin-bottom: 15px; padding: 2px;">
                         <button class="ym-quick-btn" data-id="" style="background: #e2e3e5; border: 1px solid #d3d6d8; padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px; color: #383d41;">🌐 ברירת מחדל של המערכת</button>
                         ${buttonsHtml}
                     </div>
@@ -251,7 +297,6 @@
 
         document.body.insertAdjacentHTML('beforeend', modalHtml);
 
-        // אפקט מעבר בעכבר (Hover) על הכפתורים
         document.querySelectorAll('.ym-quick-btn').forEach(btn => {
             btn.addEventListener('mouseover', function() { this.style.background = '#e6f2ff'; this.style.borderColor = '#80bdff'; });
             btn.addEventListener('mouseout', function() { this.style.background = (this.getAttribute('data-id') === '') ? '#e2e3e5' : '#f8f9fa'; this.style.borderColor = '#ced4da'; });
@@ -286,13 +331,11 @@
         targetElement.innerText = "⏳ מכין חיוג...";
         targetElement.style.pointerEvents = "none";
 
-        // אם המשתמש הפעיל את מתג הבחירה, נציג לו את החלון המהיר
         if (config.promptCallerId) {
             openQuickDialModal(phoneNumber, targetElement, (selectedCallerId) => {
                 executeCall(cleanPhone, selectedCallerId, targetElement, originalText);
             });
         } else {
-            // חיוג רגיל עם הזיהוי היוצא הקבוע שנשמר
             executeCall(cleanPhone, config.callerId, targetElement, originalText);
         }
     }

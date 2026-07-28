@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         חיוג מהיר ומערכת צינתוקים - ימות המשיח (PRO Security)
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.4.0
 // @description  איתור מספרי טלפון, הצפנת טוקן, סנכרון זיהוי יוצא וסינון מספרים נבחרים לפופ-אפ החיוג המהיר
 // @match        *://*/*
 // @exclude      *://docs.google.com/*
